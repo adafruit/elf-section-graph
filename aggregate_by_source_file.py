@@ -58,11 +58,20 @@ def to_child_lists(d):
     return l
 
 tree = to_child_lists(tree)
-
+root_name = []
+parent = None
 while len(tree) == 1:
+    if parent:
+        print(parent["name"])
+        root_name.append(parent["name"])
+    parent = tree[0]
     tree = tree[0]["children"]
 
-pathlib.Path("tree.json").write_text(json.dumps(tree))
+print(root_name)
+
+parent["name"] = "".join(root_name) + "/" + parent["name"]
+
+pathlib.Path("tree.json").write_text(json.dumps(parent))
 
 print(ag.number_of_nodes(), "nodes")
 print(ag.number_of_edges(), "edges")
