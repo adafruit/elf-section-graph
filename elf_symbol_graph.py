@@ -24,7 +24,7 @@ import networkx as nx
 import pathlib
 import arpy
 
-IGNORE_SECTIONS = [".group", ".debug_macro", ".debug_info", ".debug_abbrev", ".debug_loc", ".debug_aranges", ".debug_frame", ".debug_line", ".debug_ranges", ".comment", ".debug_str", ".riscv.attributes"]
+IGNORE_SECTIONS = [".group", ".debug_macro", ".debug_info", ".debug_abbrev", ".debug_loc", ".debug_aranges", ".debug_frame", ".debug_line", ".debug_ranges", ".comment", ".debug_str", ".riscv.attributes", ".debug_rnglists", ".debug_loclists"]
 IGNORE_RELA_SECTIONS = [".rela" + s for s in IGNORE_SECTIONS]
 IGNORE_SECTIONS += IGNORE_RELA_SECTIONS
 
@@ -75,9 +75,10 @@ def process_object_file(f, filename, graph, discarded=set()):
     symbols = list(symtab.iter_symbols())
     sections = list(ef.iter_sections())
     symbols_by_section = {}
-    for s in symbols:
+    for symbol_index, s in enumerate(symbols):
         si = s["st_shndx"]
         bind = s["st_info"]["bind"]
+        stype = s["st_info"]["type"]
         if s.name and bind == "STB_GLOBAL" and si != "SHN_UNDEF":
             if si not in ("SHN_COMMON",):
                 related_section = sections[int(si)]
@@ -94,7 +95,6 @@ def process_object_file(f, filename, graph, discarded=set()):
         if sect.name in IGNORE_SECTIONS:
             continue
             
-        # print(i, sect.name, sect.header["sh_type"], hex(sect.header["sh_size"]))
         if (sect.name, sect.header["sh_size"]) in discarded:
             continue
         if i in symbols_by_section:
@@ -125,31 +125,61 @@ def process_object_file(f, filename, graph, discarded=set()):
                 string_node, string_attrs = get_string_node(filename, sect.data(), s["st_value"])
                 graph.add_node(string_node, **string_attrs)
                 graph.add_edge(symbol_node, string_node)
+
         if isinstance(sect, RelocationSection):
             source_symbol_name = None
-            target_section = sect.header["sh_info"]
-            related_section = sections[target_section]
-            if (related_section.name, related_section.header["sh_size"]) in discarded:
+            source_section_index = sect.header["sh_info"]
+            source_section = sections[source_section_index]
+            if source_section.name in IGNORE_SECTIONS:
                 continue
 
-            for s in symbols_by_section[target_section]:
+            if (source_section.name, source_section.header["sh_size"]) in discarded:
+                continue
+
+            # Node name from symbol
+            for s in symbols_by_section[source_section_index]:
                 if s["st_size"] == 0:
                     continue
                 source_symbol_name, symbol_attrs = symbol_to_node(filename, s)
                 graph.add_node(source_symbol_name, **symbol_attrs)
 
+            # Node name from section
             if not source_symbol_name:
-                source_symbol_name, section_attrs = section_to_node(filename, related_section)
+                source_symbol_name, section_attrs = section_to_node(filename, source_section)
                 graph.add_node(source_symbol_name, **section_attrs)
 
             for r in sect.iter_relocations():
                 if r["r_info_sym"] == 0:
                     continue
                 s = symbols[r["r_info_sym"]]
-                if s["st_shndx"] == target_section:
+                dest_section_index = s["st_shndx"]
+
+                # Undefined symbols must be globals
+                if dest_section_index == "SHN_UNDEF":
+                    dest_symbol_name, symbol_attrs = symbol_to_node(filename, s)
+                    graph.add_node(dest_symbol_name, **symbol_attrs)
+                    graph.add_edge(source_symbol_name, dest_symbol_name)
                     continue
-                dest_symbol_name, symbol_attrs = symbol_to_node(filename, s)
-                graph.add_node(dest_symbol_name, **symbol_attrs)
+
+                # Ignore self loops
+                if dest_section_index == source_section_index:
+                    continue
+
+                # Node name from symbol
+                dest_symbol_name = None
+                for s in symbols_by_section[dest_section_index]:
+                    if s["st_size"] == 0:
+                        continue
+                    dest_symbol_name, symbol_attrs = symbol_to_node(filename, s)
+                    graph.add_node(dest_symbol_name, **symbol_attrs)
+
+                # Node name from section
+                if not dest_symbol_name:
+                    dest_symbol_name, section_attrs = section_to_node(filename, sections[dest_section_index])
+                    graph.add_node(dest_symbol_name, **section_attrs)
+
+                # print(source_symbol_name, "->", dest_symbol_name)
+
                 graph.add_edge(source_symbol_name, dest_symbol_name)
 
 def process_map_file(filename, graph):
@@ -254,7 +284,7 @@ if __name__ == '__main__':
     if sys.argv[1].endswith(".o"):
         for filename in sys.argv[1:]:
             with open(filename, 'rb') as f:
-                    process_file(f, graph)
+                    process_object_file(f, filename, graph)
     elif sys.argv[1].endswith(".map"):
         process_map_file(sys.argv[1], graph)
 
