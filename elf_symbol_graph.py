@@ -28,9 +28,14 @@ IGNORE_SECTIONS = [".group", ".debug_macro", ".debug_info", ".debug_abbrev", ".d
 IGNORE_RELA_SECTIONS = [".rela" + s for s in IGNORE_SECTIONS]
 IGNORE_SECTIONS += IGNORE_RELA_SECTIONS
 
+symbol_to_node_name = {
+    
+}
+
 def symbol_to_node(filename, symbol):
     bind = symbol["st_info"]["bind"]
     attrs = {"label": symbol.name, "size_bytes": symbol["st_size"]}
+
     if symbol["st_shndx"] != "SHN_UNDEF":
         attrs["source_file"] = str(filename)
     if bind == "STB_LOCAL":
@@ -42,6 +47,14 @@ def symbol_to_node(filename, symbol):
     elif bind == "STB_WEAK":
         attrs["bind"] = "weak"
         source_symbol_name = f"{symbol.name}"
+    key = (symbol.name, symbol["st_size"])
+    if key in symbol_to_node_name:
+        if symbol_to_node_name[key] != source_symbol_name:
+            symbol_to_node_name[key] = None # conflict
+    else:
+        symbol_to_node_name[key] = source_symbol_name
+    if symbol.name == "gc_mark_subtree":
+        print(symbol.name, symbol["st_size"], source_symbol_name)
     return source_symbol_name, attrs
 
 def section_to_node(filename, section):
@@ -279,6 +292,30 @@ def process_map_file(filename, graph):
                         print(e)
                         raise
 
+def process_elf_file(filename, graph):
+    """Process an elf file to get addresses of symbols"""
+    with open(filename, 'rb') as f:
+        ef = ELFFile(f)
+        # Load undefined symbols
+        symtab = ef.get_section_by_name(".symtab")
+        if not symtab:
+            return
+        symbols = list(symtab.iter_symbols())
+        for symbol_index, s in enumerate(symbols):
+            if not s.name or s["st_size"] == 0 or s["st_info"]["bind"] == "STB_WEAK":
+                # print("skip", s.name, s.entry)
+                continue
+            if s.name.endswith("_veneer"):
+                print(s.name, hex(s["st_value"]))
+                continue
+            # print(s.name, hex(s["st_value"]), s.entry)
+            key = (s.name, s["st_size"])
+            source_symbol_name = symbol_to_node_name[key]
+            if source_symbol_name is None:
+                print("conflict", s.name)
+                continue
+            graph.nodes[source_symbol_name]["address"] = s["st_value"]
+
 if __name__ == '__main__':
     graph = nx.DiGraph()
     if sys.argv[1].endswith(".o"):
@@ -287,6 +324,7 @@ if __name__ == '__main__':
                     process_object_file(f, filename, graph)
     elif sys.argv[1].endswith(".map"):
         process_map_file(sys.argv[1], graph)
+        process_elf_file(sys.argv[1][:-4], graph)
 
     for node in graph.nodes():
         in_degree = graph.in_degree(node)
