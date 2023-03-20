@@ -11,9 +11,14 @@ c = 0
 all_subpartitions = []
 sizes = graph.nodes.data("size_bytes")
 sources = graph.nodes.data("source_file")
+addresses = graph.nodes.data("address")
 for node in graph.nodes():
     sf = sources[node]
     size = sizes[node]
+    address = addresses[node]
+    if not address or address >= 0x60000000 or address < 0x20000000:
+        continue
+    print(hex(address))
     if sf is None:
         continue
     if sf not in source_files:
@@ -36,7 +41,6 @@ for s in source_files:
     size = source_files[s]
     if size is None :
         continue
-    print(path.parts)
     level = tree
     parent = None
     for part in path.parts:
@@ -62,12 +66,9 @@ root_name = []
 parent = None
 while len(tree) == 1:
     if parent:
-        print(parent["name"])
         root_name.append(parent["name"])
     parent = tree[0]
     tree = tree[0]["children"]
-
-print(root_name)
 
 parent["name"] = "".join(root_name) + "/" + parent["name"]
 

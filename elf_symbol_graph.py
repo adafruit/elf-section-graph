@@ -98,6 +98,9 @@ def process_object_file(f, filename, graph, discarded=set()):
                 if (related_section.name, related_section.header["sh_size"]) in discarded:
                     continue
             node_name, node_attrs = symbol_to_node(filename, s)
+            if related_section:
+                node_attrs["section"] = related_section.name
+                node_attrs["prelink"] = related_section.data().hex(" ", 4)
             graph.add_node(node_name, **node_attrs)
         if si not in symbols_by_section:
             symbols_by_section[si] = []
@@ -121,10 +124,12 @@ def process_object_file(f, filename, graph, discarded=set()):
                         if offset not in other_names:
                             other_names[offset] = []
                         node_name, node_attrs = symbol_to_node(filename, s)
+                        node_attrs["section"] = sect.name
                         graph.add_node(node_name, **node_attrs)
                         other_names[offset].append(node_name)
                     else:
                         actual_node_name, node_attrs = symbol_to_node(filename, s)
+                        node_attrs["section"] = sect.name
                         graph.add_node(actual_node_name, **node_attrs)
                         if offset in other_names:
                             for other_name in other_names[offset]:
@@ -136,6 +141,7 @@ def process_object_file(f, filename, graph, discarded=set()):
                 symbol_node, symbol_attrs = symbol_to_node(filename, s)
                 graph.add_node(symbol_node, **symbol_attrs)
                 string_node, string_attrs = get_string_node(filename, sect.data(), s["st_value"])
+                string_attrs["section"] = sect.name
                 graph.add_node(string_node, **string_attrs)
                 graph.add_edge(symbol_node, string_node)
 
@@ -154,11 +160,13 @@ def process_object_file(f, filename, graph, discarded=set()):
                 if s["st_size"] == 0:
                     continue
                 source_symbol_name, symbol_attrs = symbol_to_node(filename, s)
+                symbol_attrs["section"] = source_section.name
                 graph.add_node(source_symbol_name, **symbol_attrs)
 
             # Node name from section
             if not source_symbol_name:
                 source_symbol_name, section_attrs = section_to_node(filename, source_section)
+                section_attrs["section"] = source_section.name
                 graph.add_node(source_symbol_name, **section_attrs)
 
             for r in sect.iter_relocations():
@@ -167,33 +175,40 @@ def process_object_file(f, filename, graph, discarded=set()):
                 s = symbols[r["r_info_sym"]]
                 dest_section_index = s["st_shndx"]
 
+                edge_attrs = {"r_offset": r["r_offset"], "r_info_type": r["r_info_type"]}
+
                 # Undefined symbols must be globals
                 if dest_section_index == "SHN_UNDEF":
                     dest_symbol_name, symbol_attrs = symbol_to_node(filename, s)
                     graph.add_node(dest_symbol_name, **symbol_attrs)
-                    graph.add_edge(source_symbol_name, dest_symbol_name)
+                    graph.add_edge(source_symbol_name, dest_symbol_name, **edge_attrs)
                     continue
 
                 # Ignore self loops
                 if dest_section_index == source_section_index:
                     continue
 
+                dest_section = sections[int(dest_section_index)]
                 # Node name from symbol
                 dest_symbol_name = None
                 for s in symbols_by_section[dest_section_index]:
                     if s["st_size"] == 0:
                         continue
                     dest_symbol_name, symbol_attrs = symbol_to_node(filename, s)
+                    symbol_attrs["section"] = dest_section.name
+                    symbol_attrs["prelink"] = dest_section.data().hex(" ", 4)
                     graph.add_node(dest_symbol_name, **symbol_attrs)
 
                 # Node name from section
                 if not dest_symbol_name:
-                    dest_symbol_name, section_attrs = section_to_node(filename, sections[dest_section_index])
+                    dest_symbol_name, section_attrs = section_to_node(filename, dest_section)
+                    symbol_attrs["section"] = dest_section.name
+                    symbol_attrs["prelink"] = dest_section.data().hex(" ", 4)
                     graph.add_node(dest_symbol_name, **section_attrs)
 
                 # print(source_symbol_name, "->", dest_symbol_name)
 
-                graph.add_edge(source_symbol_name, dest_symbol_name)
+                graph.add_edge(source_symbol_name, dest_symbol_name, **edge_attrs)
 
 def process_map_file(filename, graph):
     path = pathlib.Path(filename)
@@ -300,6 +315,7 @@ def process_elf_file(filename, graph):
         symtab = ef.get_section_by_name(".symtab")
         if not symtab:
             return
+        sections = list(ef.iter_sections())
         symbols = list(symtab.iter_symbols())
         for symbol_index, s in enumerate(symbols):
             if not s.name or s["st_size"] == 0 or s["st_info"]["bind"] == "STB_WEAK":
@@ -314,7 +330,16 @@ def process_elf_file(filename, graph):
             if source_symbol_name is None:
                 print("conflict", s.name)
                 continue
-            graph.nodes[source_symbol_name]["address"] = s["st_value"]
+            # print(s.entry)
+            node_info = graph.nodes[source_symbol_name]
+            symbol_address = s["st_value"]
+            node_info["address"] = symbol_address
+
+            section = sections[s["st_shndx"]]
+            section_address = section["sh_addr"]
+            start = symbol_address - section_address
+            size = s["st_size"]
+            node_info["postlink"] = section.data()[start:start+size].hex(" ", 4)
 
 if __name__ == '__main__':
     graph = nx.DiGraph()
